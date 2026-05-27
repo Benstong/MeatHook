@@ -1,8 +1,0 @@
-name: MeatHook
-version: 1.0
-main: ru.yourname.meathook.MeatHook
-api-version: '1.21'
-commands:
-  getmeathook:
-    description: Получить мясной крюк
-    permission: meathook.use
