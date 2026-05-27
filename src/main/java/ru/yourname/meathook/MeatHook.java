@@ -25,6 +25,7 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Transformation;
 import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -74,6 +75,7 @@ public final class MeatHook extends JavaPlugin implements Listener {
         return true;
     }
 
+    // 1. УСТАНОВКА (Сборка сложной 3D-модели из 6 элементов)
     @EventHandler
     public void onPlace(BlockPlaceEvent event) {
         ItemStack item = event.getItemInHand();
@@ -87,6 +89,7 @@ public final class MeatHook extends JavaPlugin implements Listener {
             if (chain.getAxis() != org.bukkit.Axis.Y) return;
         }
 
+        // Невидимый базовый хитбокс
         Location loc = block.getLocation().add(0.5, -0.6, 0.5);
         ArmorStand stand = (ArmorStand) loc.getWorld().spawnEntity(loc, EntityType.ARMOR_STAND);
         stand.setVisible(false);
@@ -94,24 +97,45 @@ public final class MeatHook extends JavaPlugin implements Listener {
         stand.setMarker(true);
         stand.getPersistentDataContainer().set(hookKey, PersistentDataType.BOOLEAN, true);
 
-        Location part1Loc = block.getLocation().add(0.5, -0.1, 0.5);
-        ItemDisplay part1 = (ItemDisplay) part1Loc.getWorld().spawnEntity(part1Loc, EntityType.ITEM_DISPLAY);
-        part1.setItemStack(new ItemStack(Material.CHAIN));
-        Transformation t1 = part1.getTransformation();
-        t1.getScale().set(0.5f, 0.5f, 0.5f);
-        part1.setTransformation(t1);
-        stand.addScoreboardTag("part_" + part1.getUniqueId().toString());
+        // ЭЛЕМЕНТ 1: Тяжелое кованое основание крюка (Мини-наковальня сверху)
+        createHookPart(stand, block.getLocation().add(0.5, -0.05, 0.5), Material.ANVIL, 
+            new Vector3f(0.18f, 0.15f, 0.18f), 0, 0, 0);
 
-        Location part2Loc = block.getLocation().add(0.5, -0.32, 0.58);
-        ItemDisplay part2 = (ItemDisplay) part2Loc.getWorld().spawnEntity(part2Loc, EntityType.ITEM_DISPLAY);
-        part2.setItemStack(new ItemStack(Material.CHAIN));
-        Transformation t2 = part2.getTransformation();
-        t2.getScale().set(0.5f, 0.3f, 0.5f);
-        t2.getLeftRotation().set(new AxisAngle4f((float) Math.toRadians(45), 1, 0, 0));
-        part2.setTransformation(t2);
-        stand.addScoreboardTag("part_" + part2.getUniqueId().toString());
+        // ЭЛЕМЕНТ 2: Вертикальный железный стержень (Толстая центральная цепь)
+        createHookPart(stand, block.getLocation().add(0.5, -0.22, 0.5), Material.CHAIN, 
+            new Vector3f(0.6f, 0.6f, 0.6f), 0, 0, 0);
+
+        // ЭЛЕМЕНТ 3: Начало изгиба (Наклон вниз-вперед)
+        createHookPart(stand, block.getLocation().add(0.5, -0.42, 0.53), Material.CHAIN, 
+            new Vector3f(0.5f, 0.4f, 0.5f), 30, 1, 0, 0);
+
+        // ЭЛЕМЕНТ 4: Дно изгиба крюка (Сильный наклон вперед)
+        createHookPart(stand, block.getLocation().add(0.5, -0.52, 0.62), Material.CHAIN, 
+            new Vector3f(0.5f, 0.4f, 0.5f), 75, 1, 0, 0);
+
+        // ЭЛЕМЕНТ 5: Подъем изгиба (Наклон вверх)
+        createHookPart(stand, block.getLocation().add(0.5, -0.46, 0.73), Material.CHAIN, 
+            new Vector3f(0.5f, 0.4f, 0.5f), 120, 1, 0, 0);
+
+        // ЭЛЕМЕНТ 6: Острое жало крюка (Железный самородок на конце)
+        createHookPart(stand, block.getLocation().add(0.5, -0.34, 0.76), Material.IRON_NUGGET, 
+            new Vector3f(0.6f, 0.6f, 0.6f), 145, 1, 0, 0);
     }
 
+    // Вспомогательный метод для быстрой генерации частей модели
+    private void createHookPart(ArmorStand stand, Location loc, Material mat, Vector3f scale, float angleDeg, float x, float y, float z) {
+        ItemDisplay display = (ItemDisplay) loc.getWorld().spawnEntity(loc, EntityType.ITEM_DISPLAY);
+        display.setItemStack(new ItemStack(mat));
+        Transformation t = display.getTransformation();
+        t.getScale().set(scale);
+        if (angleDeg != 0) {
+            t.getLeftRotation().set(new AxisAngle4f((float) Math.toRadians(angleDeg), x, y, z));
+        }
+        display.setTransformation(t);
+        stand.addScoreboardTag("part_" + display.getUniqueId().toString());
+    }
+
+    // 2. ВЗАИМОДЕЙСТВИЕ (Вешаем мясо ровно на остриё нового массивного крюка)
     @EventHandler
     public void onInteract(PlayerInteractAtEntityEvent event) {
         Entity entity = event.getRightClicked();
@@ -129,18 +153,19 @@ public final class MeatHook extends JavaPlugin implements Listener {
             Material meatType = handItem.getType();
             handItem.setAmount(handItem.getAmount() - 1);
 
-            Location meatLoc = stand.getLocation().add(0, -0.15, 0.12);
+            // Мясо теперь спавнится ровно на кончике нашего нового длинного жала (Z смещен вперед)
+            Location meatLoc = stand.getLocation().add(0, 0.12, 0.26);
             ItemDisplay meatDisplay = (ItemDisplay) meatLoc.getWorld().spawnEntity(meatLoc, EntityType.ITEM_DISPLAY);
             meatDisplay.setItemStack(new ItemStack(meatType));
 
             Transformation tMeat = meatDisplay.getTransformation();
-            tMeat.getScale().set(0.55f, 0.55f, 0.55f);
+            tMeat.getScale().set(0.6f, 0.6f, 0.6f); // Жирный, хороший кусок мяса
             meatDisplay.setTransformation(tMeat);
 
             stand.getPersistentDataContainer().set(meatKey, PersistentDataType.STRING, meatType.toString());
             stand.addScoreboardTag("meat_" + meatDisplay.getUniqueId().toString());
 
-            player.sendMessage(ChatColor.YELLOW + "Вы повесили мясо на цепной крюк.");
+            player.sendMessage(ChatColor.YELLOW + "Вы повесили мясо на кованый крюк.");
 
         } else if (currentMeat != null) {
             Material meatType = Material.valueOf(currentMeat);
@@ -158,12 +183,13 @@ public final class MeatHook extends JavaPlugin implements Listener {
         }
     }
 
+    // 3. РАЗРУШЕНИЕ БЛОКА
     @EventHandler
     public void onBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
         if (block.getType() != Material.CHAIN) return;
 
-        for (Entity entity : block.getWorld().getNearbyEntities(block.getLocation().add(0.5, -0.5, 0.5), 1.2, 1.2, 1.2)) {
+        for (Entity entity : block.getWorld().getNearbyEntities(block.getLocation().add(0.5, -0.5, 0.5), 1.5, 1.5, 1.5)) {
             if (entity instanceof ArmorStand) {
                 ArmorStand stand = (ArmorStand) entity;
                 if (stand.getPersistentDataContainer().has(hookKey, PersistentDataType.BOOLEAN)) {
@@ -203,6 +229,7 @@ public final class MeatHook extends JavaPlugin implements Listener {
         if (meta != null) {
             meta.setDisplayName(ChatColor.RED + "Мясной крюк");
             List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "Тяжелый кованый крюк.");
             lore.add(ChatColor.GRAY + "Повесьте на потолок, чтобы");
             lore.add(ChatColor.GRAY + "развешивать сырое мясо.");
             meta.setLore(lore);
