@@ -11,18 +11,20 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
+import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
-import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.util.EulerAngle;
+import org.bukkit.util.Transformation;
+import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,25 +46,12 @@ public final class MeatHook extends JavaPlugin implements Listener {
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         if (!(sender instanceof Player)) return true;
         Player player = (Player) sender;
-        
-        ItemStack hook = new ItemStack(Material.CHAIN);
-        ItemMeta meta = hook.getItemMeta();
-        if (meta != null) {
-            meta.setDisplayName(ChatColor.RED + "Мясной крюк");
-            List<String> lore = new ArrayList<>();
-            lore.add(ChatColor.GRAY + "Повесьте на потолок, чтобы");
-            lore.add(ChatColor.GRAY + "развешивать сырое мясо.");
-            meta.setLore(lore);
-            meta.getPersistentDataContainer().set(hookKey, PersistentDataType.BOOLEAN, true);
-            hook.setItemMeta(meta);
-        }
-        
-        player.getInventory().addItem(hook);
+        player.getInventory().addItem(getHookItem());
         player.sendMessage(ChatColor.GREEN + "Вы получили Мясной крюк!");
         return true;
     }
 
-    // 1. СТАВИМ КРЮК (Спавним невидимый ArmorStand под цепью)
+    // 1. СТАВИМ КРЮК (Создаем сам КРЮК и невидимый хитбокс)
     @EventHandler
     public void onPlace(BlockPlaceEvent event) {
         ItemStack item = event.getItemInHand();
@@ -71,31 +60,35 @@ public final class MeatHook extends JavaPlugin implements Listener {
         }
 
         Block block = event.getBlockPlaced();
-        // Проверяем, что цепь вертикальная (висит на потолке/другой цепи)
         if (block.getBlockData() instanceof Chain) {
             Chain chain = (Chain) block.getBlockData();
             if (chain.getAxis() != org.bukkit.Axis.Y) return;
         }
 
-        // Спавним стойку прямо под блоком цепи
-        Location loc = block.getLocation().add(0.5, -1.35, 0.5); 
+        // Создаем невидимый ArmorStand для хитбокса (чтобы можно было кликать ПКМ)
+        Location loc = block.getLocation().add(0.5, -0.6, 0.5);
         ArmorStand stand = (ArmorStand) loc.getWorld().spawnEntity(loc, EntityType.ARMOR_STAND);
-        
         stand.setVisible(false);
         stand.setGravity(false);
-        stand.setArms(true);
-        stand.setBasePlate(false);
-        stand.setInvulnerable(true);
-        // Помечаем стойку тегом, чтобы плагин знал, что это наш крюк
+        stand.setMarker(true); 
         stand.getPersistentDataContainer().set(hookKey, PersistentDataType.BOOLEAN, true);
 
-        // Используем Железную мотыгу как сам крюк (в ресурспаках её легко заменить на модель крюка)
-        // Поворачиваем руку так, чтобы мотыга смотрела вниз и выглядела как крюк
-        stand.setRightArmPose(new EulerAngle(Math.toRadians(180), Math.toRadians(0), Math.toRadians(0)));
-        stand.getEquipment().setItemInMainHand(new ItemStack(Material.IRON_HOE));
+        // СПАВНИМ САМ КРЮК (Используем натяжной крюк TRIPWIRE_HOOK в ItemDisplay)
+        Location hookLoc = block.getLocation().add(0.5, -0.15, 0.5);
+        ItemDisplay hookDisplay = (ItemDisplay) hookLoc.getWorld().spawnEntity(hookLoc, EntityType.ITEM_DISPLAY);
+        hookDisplay.setItemStack(new ItemStack(Material.TRIPWIRE_HOOK));
+        
+        // Магия трансформации: разворачиваем крюк так, чтобы он смотрел вниз, а не на стену
+        Transformation hookTrans = hookDisplay.getTransformation();
+        hookTrans.getScale().set(1.5f, 1.5f, 1.5f); // Делаем его чуть крупнее и заметнее
+        hookTrans.getLeftRotation().set(new AxisAngle4f((float) Math.toRadians(90), 1, 0, 0)); // Наклоняем вниз
+        hookDisplay.setTransformation(hookTrans);
+
+        // Привязываем крюк к хитбоксу, чтобы удалить его при поломке
+        stand.addScoreboardTag("hook_model_" + hookDisplay.getUniqueId().toString());
     }
 
-    // 2. ВЗАИМОДЕЙСТВИЕ (Вешаем / снимаем мясо)
+    // 2. КЛИК ПКМ (Вешаем или снимаем мясо на созданный крюк)
     @EventHandler
     public void onInteract(PlayerInteractAtEntityEvent event) {
         Entity entity = event.getRightClicked();
@@ -104,76 +97,97 @@ public final class MeatHook extends JavaPlugin implements Listener {
         ArmorStand stand = (ArmorStand) entity;
         if (!stand.getPersistentDataContainer().has(hookKey, PersistentDataType.BOOLEAN)) return;
 
-        event.setCancelled(true); // Отменяем стандартную экипировку стойки
+        event.setCancelled(true);
         Player player = event.getPlayer();
         ItemStack handItem = player.getInventory().getItem(event.getHand());
 
         String currentMeat = stand.getPersistentDataContainer().get(meatKey, PersistentDataType.STRING);
 
-        // Если на крюке ничего нет, и в руке мясо — вешаем его
+        // Вешаем мясо
         if (currentMeat == null && isRawMeat(handItem.getType())) {
             Material meatType = handItem.getType();
-            
-            // Забираем 1 шт у игрока
             handItem.setAmount(handItem.getAmount() - 1);
+
+            // Спавним мясо прямо под нашим созданным крюком
+            Location displayLoc = stand.getLocation().add(0, -0.25, 0);
+            ItemDisplay meatDisplay = (ItemDisplay) displayLoc.getWorld().spawnEntity(displayLoc, EntityType.ITEM_DISPLAY);
+            meatDisplay.setItemStack(new ItemStack(meatType));
             
-            // Кладём мясо в ЛЕВУЮ руку стойки и настраиваем её позу
-            ItemStack meatDisplay = new ItemStack(meatType);
-            stand.getEquipment().setItemInOffHand(meatDisplay);
-            stand.setLeftArmPose(new EulerAngle(Math.toRadians(140), Math.toRadians(0), Math.toRadians(0)));
+            // Настраиваем размер и разворот мяса
+            Transformation transformation = meatDisplay.getTransformation();
+            transformation.getScale().set(0.6f, 0.6f, 0.6f);
+            meatDisplay.setTransformation(transformation);
             
-            // Запоминаем, какое мясо висит
             stand.getPersistentDataContainer().set(meatKey, PersistentDataType.STRING, meatType.toString());
-            player.sendMessage(ChatColor.YELLOW + "Вы повесили мясо на крюк.");
+            stand.addScoreboardTag("meat_display_" + meatDisplay.getUniqueId().toString());
+
+            player.sendMessage(ChatColor.YELLOW + "Вы повесили мясо на мясной крюк.");
             
-        } // Если на крюке есть мясо — снимаем его
+        } // Снимаем мясо
         else if (currentMeat != null) {
             Material meatType = Material.valueOf(currentMeat);
             
-            // Возвращаем мясо игроку (или дропаем на землю, если инвентарь полон)
             if (player.getInventory().firstEmpty() != -1) {
                 player.getInventory().addItem(new ItemStack(meatType));
             } else {
-                stand.getLocation().getWorld().dropItemNaturally(stand.getLocation().add(0, 1, 0), new ItemStack(meatType));
+                stand.getLocation().getWorld().dropItemNaturally(stand.getLocation().add(0, 0.5, 0), new ItemStack(meatType));
             }
-            
-            // Очищаем стойку
-            stand.getEquipment().setItemInOffHand(null);
+
+            // Удаляем только модельку мяса
+            removeEntityByTag(stand, "meat_display_");
+
             stand.getPersistentDataContainer().remove(meatKey);
+            // Удаляем тег мяса, но оставляем тег самого крюка
+            stand.getScoreboardTags().removeIf(tag -> tag.startsWith("meat_display_"));
             player.sendMessage(ChatColor.GOLD + "Вы сняли мясо с крюка.");
         }
     }
 
-    // 3. ЛОМАЕМ КРЮК (Убираем стойку при разрушении цепи)
+    // 3. ЛОМАЕМ БЛОК (Убираем крюк, хитбокс, мясо и дропаем предметы)
     @EventHandler
     public void onBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
         if (block.getType() != Material.CHAIN) return;
 
-        // Ищем стойку под сломанным блоком в радиусе 1.5 блоков
-        for (Entity entity : block.getWorld().getNearbyEntities(block.getLocation().add(0.5, -1, 0.5), 1.5, 1.5, 1.5)) {
+        for (Entity entity : block.getWorld().getNearbyEntities(block.getLocation().add(0.5, -0.5, 0.5), 1.2, 1.2, 1.2)) {
             if (entity instanceof ArmorStand) {
                 ArmorStand stand = (ArmorStand) entity;
                 if (stand.getPersistentDataContainer().has(hookKey, PersistentDataType.BOOLEAN)) {
                     
-                    // Если на ней было мясо, дропаем его
+                    // Если на крюке было мясо — дропаем его
                     String currentMeat = stand.getPersistentDataContainer().get(meatKey, PersistentDataType.STRING);
                     if (currentMeat != null) {
                         block.getWorld().dropItemNaturally(block.getLocation(), new ItemStack(Material.valueOf(currentMeat)));
+                        removeEntityByTag(stand, "meat_display_");
                     }
                     
-                    // Дропаем сам крюк обратно
-                    block.getWorld().dropItemNaturally(block.getLocation(), getHookItem());
+                    // Удаляем саму 3D модельку крюка
+                    removeEntityByTag(stand, "hook_model_");
                     
+                    // Выдаем назад предмет мясного крюка
+                    block.getWorld().dropItemNaturally(block.getLocation(), getHookItem());
                     stand.remove();
-                    event.setDropItems(false); // Отключаем дефолтный дроп обычной цепи
+                    event.setDropItems(false); // Отменяем дефолтный дроп ванильной цепи
                     break;
                 }
             }
         }
     }
 
-    // Вспомогательный метод создания предмета для дропа
+    // Вспомогательный метод для безопасного удаления 3D моделей по тегам UUID
+    private void removeEntityByTag(ArmorStand stand, String tagPrefix) {
+        for (String tag : stand.getScoreboardTags()) {
+            if (tag.startsWith(tagPrefix)) {
+                String uuidStr = tag.replace(tagPrefix, "");
+                for (Entity e : stand.getNearbyEntities(1.5, 1.5, 1.5)) {
+                    if (e.getUniqueId().toString().equals(uuidStr)) {
+                        e.remove();
+                    }
+                }
+            }
+        }
+    }
+
     private ItemStack getHookItem() {
         ItemStack hook = new ItemStack(Material.CHAIN);
         ItemMeta meta = hook.getItemMeta();
@@ -187,7 +201,6 @@ public final class MeatHook extends JavaPlugin implements Listener {
         return hook;
     }
 
-    // Проверка, является ли предмет сырым мясом
     private boolean isRawMeat(Material material) {
         return material == Material.BEEF || 
                material == Material.PORKCHOP || 
