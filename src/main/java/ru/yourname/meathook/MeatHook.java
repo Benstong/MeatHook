@@ -8,16 +8,20 @@ import org.bukkit.block.Block;
 import org.bukkit.block.data.type.Chain;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
-import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
-import org.bukkit.event.player.PlayerInteractAtEntityEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerToggleSneakEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -28,17 +32,26 @@ import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 public final class MeatHook extends JavaPlugin implements Listener {
 
     private NamespacedKey hookKey;
     private NamespacedKey meatKey;
+    private NamespacedKey holderKey;
+
+    private final Map<UUID, Location> hookedPlayers = new HashMap<>();
+    private final Map<UUID, UUID> playerToAnvil = new HashMap<>();
 
     @Override
     public void onEnable() {
         this.hookKey = new NamespacedKey(this, "meat_hook_block");
         this.meatKey = new NamespacedKey(this, "hook_meat_type");
+        this.holderKey = new NamespacedKey(this, "hook_holder_uuid");
+        
         getServer().getPluginManager().registerEvents(this, this);
         
         if (getCommand("getmeathook") != null) {
@@ -46,18 +59,21 @@ public final class MeatHook extends JavaPlugin implements Listener {
         }
 
         registerMeatHookRecipe();
+
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            for (Map.Entry<UUID, Location> entry : hookedPlayers.entrySet()) {
+                Player p = getServer().getPlayer(entry.getKey());
+                if (p != null && p.isOnline()) {
+                    p.teleport(entry.getValue());
+                }
+            }
+        }, 1L, 1L);
     }
 
     private void registerMeatHookRecipe() {
         NamespacedKey recipeKey = new NamespacedKey(this, "meat_hook_recipe");
         ShapedRecipe recipe = new ShapedRecipe(recipeKey, getHookItem());
-        
-        recipe.shape(
-            "C",
-            "C",
-            "N"
-        );
-        
+        recipe.shape("C", "C", "N");
         recipe.setIngredient('C', Material.CHAIN);
         recipe.setIngredient('N', Material.IRON_NUGGET);
         
@@ -75,7 +91,7 @@ public final class MeatHook extends JavaPlugin implements Listener {
         return true;
     }
 
-    // 1. УСТАНОВКА (Сборка сложной 3D-модели из 6 элементов)
+    // 1. СБОРКА ВЫСОКОДЕТАЛИЗИРОВАННОГО КОВАННОГО КРЮКА (8 элементов трансформации)
     @EventHandler
     public void onPlace(BlockPlaceEvent event) {
         ItemStack item = event.getItemInHand();
@@ -89,138 +105,228 @@ public final class MeatHook extends JavaPlugin implements Listener {
             if (chain.getAxis() != org.bukkit.Axis.Y) return;
         }
 
-        // Невидимый базовый хитбокс
-        Location loc = block.getLocation().add(0.5, -0.6, 0.5);
-        ArmorStand stand = (ArmorStand) loc.getWorld().spawnEntity(loc, EntityType.ARMOR_STAND);
-        stand.setVisible(false);
-        stand.setGravity(false);
-        stand.setMarker(true);
-        stand.getPersistentDataContainer().set(hookKey, PersistentDataType.BOOLEAN, true);
+        Location baseLoc = block.getLocation();
 
-        // ЭЛЕМЕНТ 1: Тяжелое кованое основание крюка (Мини-наковальня сверху)
-        createHookPart(stand, block.getLocation().add(0.5, -0.05, 0.5), Material.ANVIL, 
-            new Vector3f(0.18f, 0.15f, 0.18f), 0, 0, 0);
+        // Главный узел (Муфта крепления). Сплющенная наковальня, обнимающая основание цепи.
+        ItemDisplay mainAnvil = createHookPart(baseLoc, Material.ANVIL, 
+            new Vector3f(0.00f, -0.48f, 0.00f), new Vector3f(0.24f, 0.12f, 0.24f), 0);
+        mainAnvil.getPersistentDataContainer().set(hookKey, PersistentDataType.BOOLEAN, true);
 
-        // ЭЛЕМЕНТ 2: Вертикальный железный стержень (Толстая центральная цепь)
-        createHookPart(stand, block.getLocation().add(0.5, -0.22, 0.5), Material.CHAIN, 
-            new Vector3f(0.6f, 0.6f, 0.6f), 0, 0, 0);
+        // Вертикальное основание багра (Толстый кованый квадратный прут)
+        createHookPart(baseLoc, Material.ANVIL, new Vector3f(0.00f, -0.62f, 0.00f), new Vector3f(0.09f, 0.22f, 0.09f), 0);
 
-        // ЭЛЕМЕНТ 3: Начало изгиба (Наклон вниз-вперед)
-        createHookPart(stand, block.getLocation().add(0.5, -0.42, 0.53), Material.CHAIN, 
-            new Vector3f(0.5f, 0.4f, 0.5f), 30, 1, 0, 0);
+        // Плавный кованый изгиб J-формы из 5 сегментов с шагом вращения по оси X
+        createHookPart(baseLoc, Material.ANVIL, new Vector3f(0.00f, -0.74f, 0.02f), new Vector3f(0.08f, 0.14f, 0.08f), 25);
+        createHookPart(baseLoc, Material.ANVIL, new Vector3f(0.00f, -0.82f, 0.08f), new Vector3f(0.08f, 0.14f, 0.08f), 55);
+        createHookPart(baseLoc, Material.ANVIL, new Vector3f(0.00f, -0.85f, 0.18f), new Vector3f(0.08f, 0.14f, 0.08f), 85);
+        createHookPart(baseLoc, Material.ANVIL, new Vector3f(0.00f, -0.81f, 0.28f), new Vector3f(0.07f, 0.14f, 0.07f), 115);
+        createHookPart(baseLoc, Material.ANVIL, new Vector3f(0.00f, -0.73f, 0.35f), new Vector3f(0.06f, 0.14f, 0.06f), 140);
 
-        // ЭЛЕМЕНТ 4: Дно изгиба крюка (Сильный наклон вперед)
-        createHookPart(stand, block.getLocation().add(0.5, -0.52, 0.62), Material.CHAIN, 
-            new Vector3f(0.5f, 0.4f, 0.5f), 75, 1, 0, 0);
-
-        // ЭЛЕМЕНТ 5: Подъем изгиба (Наклон вверх)
-        createHookPart(stand, block.getLocation().add(0.5, -0.46, 0.73), Material.CHAIN, 
-            new Vector3f(0.5f, 0.4f, 0.5f), 120, 1, 0, 0);
-
-        // ЭЛЕМЕНТ 6: Острое жало крюка (Железный самородок на конце)
-        createHookPart(stand, block.getLocation().add(0.5, -0.34, 0.76), Material.IRON_NUGGET, 
-            new Vector3f(0.6f, 0.6f, 0.6f), 145, 1, 0, 0);
+        // Остриё крюка (Финальное стальное жало, пробивающее туши)
+        createHookPart(baseLoc, Material.IRON_NUGGET, new Vector3f(0.00f, -0.64f, 0.38f), new Vector3f(0.55f, 0.55f, 0.55f), 165);
     }
 
-    // Вспомогательный метод для быстрой генерации частей модели
-    private void createHookPart(ArmorStand stand, Location loc, Material mat, Vector3f scale, float angleDeg, float x, float y, float z) {
-        ItemDisplay display = (ItemDisplay) loc.getWorld().spawnEntity(loc, EntityType.ITEM_DISPLAY);
+    // Умный хелпер: спавнит сущность строго в центре, двигая лишь визуальный меш
+    private ItemDisplay createHookPart(Location blockLoc, Material mat, Vector3f translation, Vector3f scale, float angleDeg) {
+        Location spawnLoc = blockLoc.clone().add(0.5, 0.5, 0.5);
+        ItemDisplay display = (ItemDisplay) spawnLoc.getWorld().spawnEntity(spawnLoc, EntityType.ITEM_DISPLAY);
         display.setItemStack(new ItemStack(mat));
+        
         Transformation t = display.getTransformation();
+        t.getTranslation().set(translation);
         t.getScale().set(scale);
         if (angleDeg != 0) {
-            t.getLeftRotation().set(new AxisAngle4f((float) Math.toRadians(angleDeg), x, y, z));
+            t.getLeftRotation().set(new AxisAngle4f((float) Math.toRadians(angleDeg), 1, 0, 0));
         }
         display.setTransformation(t);
-        stand.addScoreboardTag("part_" + display.getUniqueId().toString());
+        display.getPersistentDataContainer().set(hookKey, PersistentDataType.BOOLEAN, true);
+        return display;
     }
 
-    // 2. ВЗАИМОДЕЙСТВИЕ (Вешаем мясо ровно на остриё нового массивного крюка)
+    // 2. ВЗАИМОДЕЙСТВИЕ
     @EventHandler
-    public void onInteract(PlayerInteractAtEntityEvent event) {
-        Entity entity = event.getRightClicked();
-        if (!(entity instanceof ArmorStand)) return;
+    public void onBlockInteract(PlayerInteractEvent event) {
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
+        if (event.getHand() != EquipmentSlot.HAND) return;
 
-        ArmorStand stand = (ArmorStand) entity;
-        if (!stand.getPersistentDataContainer().has(hookKey, PersistentDataType.BOOLEAN)) return;
+        Block block = event.getClickedBlock();
+        if (block == null || block.getType() != Material.CHAIN) return;
+
+        ItemDisplay anvil = findAnvilDisplay(block);
+        if (anvil == null) return; 
 
         event.setCancelled(true);
         Player player = event.getPlayer();
-        ItemStack handItem = player.getInventory().getItem(event.getHand());
-        String currentMeat = stand.getPersistentDataContainer().get(meatKey, PersistentDataType.STRING);
+        ItemStack handItem = player.getInventory().getItemInMainHand();
+        
+        String currentState = anvil.getPersistentDataContainer().get(meatKey, PersistentDataType.STRING);
 
-        if (currentMeat == null && isRawMeat(handItem.getType())) {
-            Material meatType = handItem.getType();
-            handItem.setAmount(handItem.getAmount() - 1);
+        // КРЮК СВОБОДЕН
+        if (currentState == null) {
+            // Вешаем абсолютно ЛЮБОЕ мясо или рыбу
+            if (handItem.getType() != Material.AIR && isMeat(handItem.getType())) {
+                Material meatType = handItem.getType();
+                handItem.setAmount(handItem.getAmount() - 1);
 
-            // Мясо теперь спавнится ровно на кончике нашего нового длинного жала (Z смещен вперед)
-            Location meatLoc = stand.getLocation().add(0, 0.12, 0.26);
-            ItemDisplay meatDisplay = (ItemDisplay) meatLoc.getWorld().spawnEntity(meatLoc, EntityType.ITEM_DISPLAY);
-            meatDisplay.setItemStack(new ItemStack(meatType));
+                // Спавним кусок мяса, насаженный прямо на новое кованое остриё
+                ItemDisplay meatDisplay = createHookPart(block.getLocation(), meatType, 
+                    new Vector3f(0.00f, -0.62f, 0.38f), new Vector3f(0.7f, 0.7f, 0.7f), 0);
+                meatDisplay.addScoreboardTag("meathook_meat_render");
 
-            Transformation tMeat = meatDisplay.getTransformation();
-            tMeat.getScale().set(0.6f, 0.6f, 0.6f); // Жирный, хороший кусок мяса
-            meatDisplay.setTransformation(tMeat);
-
-            stand.getPersistentDataContainer().set(meatKey, PersistentDataType.STRING, meatType.toString());
-            stand.addScoreboardTag("meat_" + meatDisplay.getUniqueId().toString());
-
-            player.sendMessage(ChatColor.YELLOW + "Вы повесили мясо на кованый крюк.");
-
-        } else if (currentMeat != null) {
-            Material meatType = Material.valueOf(currentMeat);
-
+                anvil.getPersistentDataContainer().set(meatKey, PersistentDataType.STRING, meatType.toString());
+                player.sendMessage(ChatColor.YELLOW + "Вы насадили мясо на остриё кованого крюка.");
+            } 
+            // Вешаем ИГРОКА
+            else if (handItem.getType() == Material.AIR) {
+                // Игрок фиксируется грудью прямо на уровне острия крюка
+                Location hangLoc = block.getLocation().add(0.5, -1.55, 0.88);
+                hangLoc.setYaw(player.getLocation().getYaw());
+                hangLoc.setPitch(15); // Небольшой наклон головы для реализма мучений
+                
+                player.teleport(hangLoc);
+                player.setGravity(false);
+                
+                hookedPlayers.put(player.getUniqueId(), hangLoc);
+                playerToAnvil.put(player.getUniqueId(), anvil.getUniqueId());
+                
+                anvil.getPersistentDataContainer().set(meatKey, PersistentDataType.STRING, "PLAYER");
+                anvil.getPersistentDataContainer().set(holderKey, PersistentDataType.STRING, player.getUniqueId().toString());
+                
+                player.sendMessage(ChatColor.RED + "Вы зацепились за мясной багор! Нажмите SHIFT, чтобы слезть.");
+            }
+        }
+        // СНЯТИЕ МЯСА
+        else if (!currentState.equals("PLAYER")) {
+            Material meatType = Material.valueOf(currentState);
             if (player.getInventory().firstEmpty() != -1) {
                 player.getInventory().addItem(new ItemStack(meatType));
             } else {
-                stand.getLocation().getWorld().dropItemNaturally(stand.getLocation().add(0, 0.5, 0), new ItemStack(meatType));
+                block.getWorld().dropItemNaturally(block.getLocation().add(0.5, 0.5, 0.5), new ItemStack(meatType));
             }
 
-            removeEntitiesByTag(stand, "meat_");
-            stand.getPersistentDataContainer().remove(meatKey);
-            stand.getScoreboardTags().removeIf(tag -> tag.startsWith("meat_"));
-            player.sendMessage(ChatColor.GOLD + "Вы сняли мясо с крюка.");
+            Location center = block.getLocation().add(0.5, 0.5, 0.5);
+            for (Entity e : center.getWorld().getNearbyEntities(center, 0.2, 0.2, 0.2)) {
+                if (e instanceof ItemDisplay && e.getScoreboardTags().contains("meathook_meat_render")) {
+                    e.remove();
+                }
+            }
+
+            anvil.getPersistentDataContainer().remove(meatKey);
+            player.sendMessage(ChatColor.GOLD + "Вы сняли тушу с крюка.");
+        } else {
+            player.sendMessage(ChatColor.RED + "На этом багре уже висит человек!");
         }
     }
 
-    // 3. РАЗРУШЕНИЕ БЛОКА
+    // Слезть с крюка
+    @EventHandler
+    public void onSneak(PlayerToggleSneakEvent event) {
+        if (!event.isSneaking()) return;
+        Player player = event.getPlayer();
+        
+        if (hookedPlayers.containsKey(player.getUniqueId())) {
+            hookedPlayers.remove(player.getUniqueId());
+            player.setGravity(true);
+            
+            UUID anvilUid = playerToAnvil.remove(player.getUniqueId());
+            if (anvilUid != null) {
+                Entity anvil = getServer().getEntity(anvilUid);
+                if (anvil instanceof ItemDisplay) {
+                    anvil.getPersistentDataContainer().remove(meatKey);
+                    anvil.getPersistentDataContainer().remove(holderKey);
+                }
+            }
+            player.sendMessage(ChatColor.GOLD + "Вы аккуратно снялись с крюка.");
+        }
+    }
+
+    // 3. УНИЧТОЖЕНИЕ БЛОКА И ОЧИСТКА
     @EventHandler
     public void onBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
         if (block.getType() != Material.CHAIN) return;
 
-        for (Entity entity : block.getWorld().getNearbyEntities(block.getLocation().add(0.5, -0.5, 0.5), 1.5, 1.5, 1.5)) {
-            if (entity instanceof ArmorStand) {
-                ArmorStand stand = (ArmorStand) entity;
-                if (stand.getPersistentDataContainer().has(hookKey, PersistentDataType.BOOLEAN)) {
+        ItemDisplay anvil = findAnvilDisplay(block);
+        if (anvil == null) return;
 
-                    String currentMeat = stand.getPersistentDataContainer().get(meatKey, PersistentDataType.STRING);
-                    if (currentMeat != null) {
-                        block.getWorld().dropItemNaturally(block.getLocation(), new ItemStack(Material.valueOf(currentMeat)));
-                        removeEntitiesByTag(stand, "meat_");
+        String currentState = anvil.getPersistentDataContainer().get(meatKey, PersistentDataType.STRING);
+        if (currentState != null) {
+            if (currentState.equals("PLAYER")) {
+                String playerUuidStr = anvil.getPersistentDataContainer().get(holderKey, PersistentDataType.STRING);
+                if (playerUuidStr != null) {
+                    UUID pUuid = UUID.fromString(playerUuidStr);
+                    hookedPlayers.remove(pUuid);
+                    playerToAnvil.remove(pUuid);
+                    Player p = getServer().getPlayer(pUuid);
+                    if (p != null) {
+                        p.setGravity(true);
+                        p.sendMessage(ChatColor.GOLD + "Крюк вырван из потолка, вы упали!");
                     }
+                }
+            } else {
+                Material meatType = Material.valueOf(currentState);
+                block.getWorld().dropItemNaturally(block.getLocation().add(0.5, 0.5, 0.5), new ItemStack(meatType));
+            }
+        }
 
-                    removeEntitiesByTag(stand, "part_");
-                    block.getWorld().dropItemNaturally(block.getLocation(), getHookItem());
-                    stand.remove();
-                    event.setDropItems(false);
-                    break;
+        // Удаляем всю кастомную модель (все сущности в этой точке)
+        Location center = block.getLocation().add(0.5, 0.5, 0.5);
+        for (Entity e : center.getWorld().getNearbyEntities(center, 0.3, 0.3, 0.3)) {
+            if (e instanceof ItemDisplay && e.getPersistentDataContainer().has(hookKey, PersistentDataType.BOOLEAN)) {
+                e.remove();
+            }
+        }
+
+        block.getWorld().dropItemNaturally(block.getLocation().add(0.5, 0.5, 0.5), getHookItem());
+        event.setDropItems(false);
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        cleanPlayerHook(event.getPlayer());
+    }
+
+    @EventHandler
+    public void onDeath(PlayerDeathEvent event) {
+        cleanPlayerHook(event.getEntity());
+    }
+
+    private void cleanPlayerHook(Player player) {
+        UUID pUuid = player.getUniqueId();
+        if (hookedPlayers.containsKey(pUuid)) {
+            hookedPlayers.remove(pUuid);
+            player.setGravity(true);
+            UUID anvilUid = playerToAnvil.remove(pUuid);
+            if (anvilUid != null) {
+                Entity anvil = getServer().getEntity(anvilUid);
+                if (anvil instanceof ItemDisplay) {
+                    anvil.getPersistentDataContainer().remove(meatKey);
+                    anvil.getPersistentDataContainer().remove(holderKey);
                 }
             }
         }
     }
 
-    private void removeEntitiesByTag(ArmorStand stand, String prefix) {
-        for (String tag : stand.getScoreboardTags()) {
-            if (tag.startsWith(prefix)) {
-                String uuidStr = tag.replace(prefix, "");
-                for (Entity e : stand.getNearbyEntities(1.5, 1.5, 1.5)) {
-                    if (e.getUniqueId().toString().equals(uuidStr)) {
-                        e.remove();
+    private ItemDisplay findAnvilDisplay(Block block) {
+        Location center = block.getLocation().add(0.5, 0.5, 0.5);
+        for (Entity e : center.getWorld().getNearbyEntities(center, 0.1, 0.1, 0.1)) {
+            if (e instanceof ItemDisplay) {
+                ItemDisplay id = (ItemDisplay) e;
+                if (id.getItemStack() != null && id.getItemStack().getType() == Material.ANVIL) {
+                    if (id.getPersistentDataContainer().has(hookKey, PersistentDataType.BOOLEAN)) {
+                        return id;
                     }
                 }
             }
         }
+        return null;
+    }
+
+    private boolean isMeat(Material material) {
+        String name = material.name();
+        return name.contains("BEEF") || name.contains("PORK") || name.contains("CHICKEN") 
+            || name.contains("MUTTON") || name.contains("RABBIT") || name.contains("FLESH") 
+            || name.contains("COD") || name.contains("SALMON") || name.contains("ROTTEN");
     }
 
     private ItemStack getHookItem() {
@@ -229,21 +335,13 @@ public final class MeatHook extends JavaPlugin implements Listener {
         if (meta != null) {
             meta.setDisplayName(ChatColor.RED + "Мясной крюк");
             List<String> lore = new ArrayList<>();
-            lore.add(ChatColor.GRAY + "Тяжелый кованый крюк.");
-            lore.add(ChatColor.GRAY + "Повесьте на потолок, чтобы");
-            lore.add(ChatColor.GRAY + "развешивать сырое мясо.");
-            meta.setLore(lore);
+            lore.add(ChatColor.DARK_GRAY + "Тяжелая кованая сталь");
+            lore.add(ChatColor.GRAY + "Повесьте на потолок.");
+            lore.add(ChatColor.GRAY + "Клик мясом - насадить тушу.");
+            lore.add(ChatColor.GRAY + "Клик пустой рукой - повесить себя.");
             meta.getPersistentDataContainer().set(hookKey, PersistentDataType.BOOLEAN, true);
             hook.setItemMeta(meta);
         }
         return hook;
-    }
-
-    private boolean isRawMeat(Material material) {
-        return material == Material.BEEF || 
-               material == Material.PORKCHOP || 
-               material == Material.CHICKEN || 
-               material == Material.MUTTON || 
-               material == Material.RABBIT;
     }
 }
